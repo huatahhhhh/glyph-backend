@@ -1,3 +1,7 @@
+from datetime import datetime
+import time
+import sqlite3
+from dateutil.relativedelta import relativedelta
 from  web3.auto import w3
 from TwitterAPI import TwitterAPI
 from twitterwebhooks import TwitterWebhookAdapter
@@ -5,6 +9,7 @@ import os
 import json
 from flask import Flask, request, abort
 from eth_account.messages import encode_defunct
+from contract import PredictContract, PriceFeedContract
 
 TWITTER_API_KEY = os.environ.get('TWITTER_API_KEY', None)
 TWITTER_API_SECRET = os.environ.get('TWITTER_API_SECRET', None)
@@ -13,6 +18,7 @@ ACCESS_TOKEN_SECRET = os.environ.get('TWITTER_ACCESS_TOKEN_SECRET', None)
 TWITTER_HANDLE = os.environ.get('TWITTER_HANDLE', None)
 TWITTER_ID = os.environ.get('TWITTER_ID', None)
 ERROR_REPLY = "Sorry.. error encountered on bot :<"
+DB_NAME = "glyph_bot.db"
 
 app = Flask(__name__)
 
@@ -52,22 +58,111 @@ def handle_message(event_data):
 
     if args[0] != TWITTER_HANDLE:
         print("got different handle", args[0])
-        return
+        if args[1] == TWITTER_HANDLE:
+            args = args[1:]
+        else:
+            return
 
     command = args[1].lower()
     if command == "register":
-        verified, reply = _handle_register_flow(user_id, args)
-        if not verified:
-            reply_to_tweet(tweet_id, reply)
-        reply_to_tweet(tweet_id, "You are verified :>")
+        _handle_register_flow(tweet_id, user_id, user_name, args)
+        return
 
-    # elif args[1] in ("long", "short"):
-        # symbol = args[2] 
-        # if symbol not in SYMBOLS:
-            # # TODO reply with error
-            # return 
+    elif args[1].lower() in ("long", "short"):
+        _handle_predict_flow(tweet_id, user_id, user_name, args)
+        return
 
-def _handle_register_flow(user_id, args):
+def _get_address(user_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    result = c.execute(f"SELECT * FROM User WHERE twitter_id={user_id}").fetchone()
+    conn.close()
+    return result[1]
+
+def _handle_predict_flow(tweet_id, user_id, user_name, args):
+    """@bot [long,short] [usd] [3M,1Y,1d,1h]
+
+    H D M Y 
+    """
+    address = _get_address(user_id)
+    if not address:
+        reply_to_tweet(tweet_id, user_name, "You are not registered, please register first")
+
+    direction = args[1].upper()
+    if direction == "LONG":
+        direction = True
+    elif direction == "SHORT":
+        direction = False
+    else:
+        reply_to_tweet(tweet_id, user_name, "Direction must be 'long' or 'short'")
+
+    # check if symbol is active
+    symbol = args[2].upper()
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    result = c.execute(f"SELECT * FROM Symbol WHERE symbol='{symbol}'").fetchall()
+    conn.close()
+    symbol_invalid = False
+    if len(result) == 1:
+        if not int(result[0][1]):
+            symbol_invalid = True
+    else:
+        symbol_invalid = True
+
+    if symbol_invalid:
+        reply_to_tweet(tweet_id, user_name, f"Symbol {symbol} is not valid")
+        return 
+    
+    # parse datetime
+    horizon = args[3].upper()
+    if len(horizon) < 2:
+        reply_to_tweet(tweet_id, user_name, f"Invalid duration - {horizon}")
+        return 
+
+    timeunit = horizon[-1]
+
+    units = {
+        'H': relativedelta(hours=1),
+        'D': relativedelta(days=1),
+        'M': relativedelta(months=1),
+        'W': relativedelta(weeks=1),
+        'Y': relativedelta(years=1)
+    }
+    if timeunit not in units.keys():
+        reply_to_tweet(tweet_id, user_name, f"Invalid duration - {horizon}")
+        return
+    else:
+        unit = units[timeunit]
+    try:
+        scalar = int(horizon[:-1])
+        duration = scalar * unit
+    except ValueError:
+        reply_to_tweet(tweet_id, user_name, f"Invalid duration - {horizon}")
+        return
+    dt_now = datetime.now()
+    duration = int(((dt_now + duration) - dt_now).total_seconds())
+
+    # prediction time
+    pred_at = int(time.time())
+
+    print(address, pred_at, symbol, direction, duration, "na")
+    tx = PredictContract.create_prediction(
+            address,
+            pred_at,
+            symbol,
+            direction,
+            duration,
+            "na" # TODO upload to IPFS
+    )
+    success_reply_to_tweet(tweet_id, user_name, "created prediction", tx)
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute(f"INSERT INTO TwitterPrediction VALUES ({tweet_id}, '{address}', {pred_at}, '{symbol}')")
+
+
+
+def _handle_register_flow(tweet_id, user_id, user_name, args):
     try:
         if len(args) < 4:
             print(args)
@@ -78,11 +173,25 @@ def _handle_register_flow(user_id, args):
         message = encode_defunct(text=str(user_id)) # we expect user's twitter id to be encoded
         got_wallet = w3.eth.account.recover_message(message, signature=signature)
         if wallet != got_wallet:
-            return False, "Invalid signature, please check your message"
+            reply_to_tweet(tweet_id, user_name, "Invalid signature, please check your message")
+            return 
         else:
-            return True, ""
-    except:
-        return False, ERROR_REPLY
+            # check if user is registered
+            conn = sqlite3.connect(DB_NAME)
+            c = conn.cursor()
+            
+            exists = c.execute(f"SELECT * FROM User WHERE twitter_id={user_id}").fetchall()
+            if len(exists) == 0:
+                c.execute(f"INSERT INTO User VALUES ({user_id}, '{wallet}')")
+                conn.commit()
+            conn.close()
+
+            tx = PredictContract.add_user(wallet)
+            success_reply_to_tweet(tweet_id, user_name, "registered wallet", tx)
+
+    except Exception as e:
+        print(e)
+        reply_to_tweet(tweet_id, user_name, ERROR_REPLY)
 
 def get_tweet_text(tweet_id):
     # webhook does not have full text, use api to get the text instead
@@ -92,10 +201,18 @@ def get_tweet_text(tweet_id):
         return item['text']
     return ''
 
-def reply_to_tweet(tweet_id, message):
+def success_reply_to_tweet(tweet_id, user_name, event, tx):
+    # event should be <verb> <noun>
+    # e.g created prediction, added user
+    url = f'https://mumbai.polygonscan.com/tx/{tx}'
+    message = f"Successfully {event}!! :>\nTransaction URL: {url}"
+    reply_to_tweet(tweet_id, user_name, message)
+
+def reply_to_tweet(tweet_id, user_name, message):
     # bot reply to tweet
     assert len(message) > 0
     twitter_api = get_twitter_api_v2()
+    message = f"@{user_name} {message}"
     data = {
         'reply': {
             'in_reply_to_tweet_id': str(tweet_id)
@@ -111,7 +228,7 @@ def parse_message(message: str):
     valid = False
     message = message.strip()
     args = message.split(' ')
-    args = [arg for arg in args if arg]
+    args = [arg.strip() for arg in args if arg]
     return args
 
 # @events_adapter.on("any")
