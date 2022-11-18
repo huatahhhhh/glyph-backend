@@ -9,6 +9,7 @@ import pprint
 import time
 import sqlite3
 from contract import PriceFeedContract, PredictContract, _Contract
+from app import reply_to_tweet
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -41,7 +42,7 @@ def get_events(from_block, to_block, contract_class: _Contract, dump=False):
         log['transactionHash'] = str(log['transactionHash'])
         log['blockHash'] = str(log['blockHash'])
 
-    pp.pprint(all_logs)
+    #pp.pprint(all_logs)
     if dump:
         data = json.dumps(all_logs, indent=2)
         with open(f'{contract_class.__name__}.event_dump', 'w') as f:
@@ -88,7 +89,7 @@ def activate_symbol(args):
         c.execute(f"INSERT INTO Symbol VALUES ('{symbol}', 1)");
     else:
         c.execute(f"UPDATE Symbol SET active=1 WHERE symbol='{symbol}'");
-    conn.commit()
+    # conn.commit()
 
 def deactivate_symbol(args):
     symbol = args['symbol']
@@ -97,7 +98,7 @@ def deactivate_symbol(args):
         assert False
     else:
         c.execute(f"UPDATE Symbol SET active=0 WHERE symbol='{symbol}'");
-    conn.commit()
+    # conn.commit()
 
 # def add_user(args):
     # address = args['_address']
@@ -122,10 +123,11 @@ def create_prediction(args):
         'created'
         )
     """)
-    conn.commit()
+    # conn.commit()
     
 
 def complete_prediction(args):
+    print("handling complete prediction", args)
     c.execute(f"""
     UPDATE Prediction SET
         final_price={args['finalPrice']},
@@ -136,7 +138,51 @@ def complete_prediction(args):
     predicted_on={args['predTimestamp']} AND
     symbol='{args['symbol']}'
     """)
-    conn.commit()
+    # conn.commit()
+
+    # find tweet
+    address, pred_at, symbol = args['user'], args['predTimestamp'], args['symbol']
+    pred = c.execute(f"SELECT * FROM TwitterPrediction WHERE address='{address}' AND predicted_on={pred_at} AND symbol='{symbol}'").fetchall()
+
+    if len(pred) == 0:
+        return
+    tweet_id = pred[0][0]
+
+    pred = c.execute(f"SELECT * FROM Prediction WHERE address='{address}' AND predicted_on={pred_at} AND symbol='{symbol}'").fetchall()
+    if len(pred) ==0:
+        return
+    pred = pred[0]
+    initial_price, final_price = pred[6], pred[8]
+    direction = int(pred[3])
+
+    initial_price = int(initial_price)/1e8
+    final_price = int(final_price)/1e8
+
+    change = (final_price - initial_price)/initial_price
+
+    right = False
+    change_sign = "+" if change > 0 else "-"
+    if change * direction> 0:
+        right = True
+
+    right = "right" if right else "wrong"
+    change_pct = change*100
+    message = f"Your prediction is {right}, {symbol} {change_sign}{change_pct:.5f}%"
+
+    try:
+        reply_to_tweet(tweet_id, None, message)
+        print('replied to',tweet_id)
+    except Exception as e:
+        print('failed to reply to')
+        print(e)
+
+
+        
+
+    
+    
+
+
 
 def update_user_score(args):
     pass
@@ -155,13 +201,13 @@ def set_last_block_db(block_id):
         c.execute(f"INSERT INTO ChainUpdate VALUES ({block_id})")
     else:
         c.execute(f"UPDATE ChainUpdate SET last_updated_block_id={block_id}")
-    conn.commit()
+    # conn.commit()
 
 
 if __name__ == "__main__":
     # TODO get latest block and dump
     START_BLOCK = 29201633
-    BLOCK_INTERVAL = 9500
+    BLOCK_INTERVAL = 5500
     last_block_check = get_last_block_db()
     if not last_block_check:
         last_block_check = START_BLOCK
@@ -169,10 +215,13 @@ if __name__ == "__main__":
     web3 = PriceFeedContract.web3ws()
     latest_block = web3.eth.get_block('latest')['number']
 
+    print('latest_block', latest_block)
+    print('last_block_check', last_block_check)
     while last_block_check < latest_block:
         from_block = last_block_check+1
-        last_block_check += from_block + BLOCK_INTERVAL
+        last_block_check = from_block + BLOCK_INTERVAL
         if last_block_check > latest_block:
+            print('last block check greater than latest')
             last_block_check = latest_block
 
         print("from block", from_block)
@@ -182,6 +231,7 @@ if __name__ == "__main__":
         data = data1 + data2
         handle_data(data)
         set_last_block_db(last_block_check)
+        conn.commit()
 
     # with open("./PredictContract.event_dump2", 'r') as f:
         # data = json.loads(f.read())

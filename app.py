@@ -1,3 +1,4 @@
+from ipfs import write_to_ipfs
 from datetime import datetime
 import time
 import sqlite3
@@ -8,6 +9,7 @@ from twitterwebhooks import TwitterWebhookAdapter
 import os
 import json
 from flask import Flask, request, abort
+from flask_cors import CORS
 from eth_account.messages import encode_defunct
 from contract import PredictContract, PriceFeedContract
 
@@ -21,6 +23,7 @@ ERROR_REPLY = "Sorry.. error encountered on bot :<"
 DB_NAME = "glyph_bot.db"
 
 app = Flask(__name__)
+CORS(app)
 
 events_adapter = TwitterWebhookAdapter(TWITTER_API_SECRET, "/webhooks/twitter", app)
 
@@ -69,7 +72,7 @@ def handle_message(event_data):
         return
 
     elif args[1].lower() in ("long", "short"):
-        _handle_predict_flow(tweet_id, user_id, user_name, args)
+        _handle_predict_flow(tweet_id, user_id, user_name, args, tweet_text)
         return
 
 def _get_address(user_id):
@@ -79,7 +82,7 @@ def _get_address(user_id):
     conn.close()
     return result[1]
 
-def _handle_predict_flow(tweet_id, user_id, user_name, args):
+def _handle_predict_flow(tweet_id, user_id, user_name, args, tweet_text):
     """@bot [long,short] [usd] [3M,1Y,1d,1h]
 
     H D M Y 
@@ -146,19 +149,22 @@ def _handle_predict_flow(tweet_id, user_id, user_name, args):
     pred_at = int(time.time())
 
     print(address, pred_at, symbol, direction, duration, "na")
+    ipfs_data = dict(tweet_id=tweet_id, twitter_user_id=user_id, twitter_username=f"@{user_name}", tweet=tweet_text)
+    ipfscid = write_to_ipfs(ipfs_data)
     tx = PredictContract.create_prediction(
             address,
             pred_at,
             symbol,
             direction,
             duration,
-            "na" # TODO upload to IPFS
+            str(ipfscid)
     )
     success_reply_to_tweet(tweet_id, user_name, "created prediction", tx)
 
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute(f"INSERT INTO TwitterPrediction VALUES ({tweet_id}, '{address}', {pred_at}, '{symbol}')")
+    conn.commit()
 
 
 
@@ -212,7 +218,12 @@ def reply_to_tweet(tweet_id, user_name, message):
     # bot reply to tweet
     assert len(message) > 0
     twitter_api = get_twitter_api_v2()
-    message = f"@{user_name} {message}"
+
+    prefix = f""
+    if user_name:
+        prefix = f"@{user_name} "
+
+    message = f"{prefix}{message}"
     data = {
         'reply': {
             'in_reply_to_tweet_id': str(tweet_id)
@@ -257,8 +268,16 @@ def twitter_user_lookup():
     except Exception:
         abort(404)
     abort(404)
+
+@app.route("/glyph/isuser/")
+def wallet_lookup():
+    wallet = request.args.get("address")
+    return {'result': PredictContract.is_user(wallet)}
+
+ 
  
 # Once we have our event listeners configured, we can start the
 # Flask server with the default `/events` endpoint on port 3000
 if __name__ == '__main__':
-    app.run(port=3000)
+    app.run(host="0.0.0.0", port=3000)
+    # app.run(port=3000)

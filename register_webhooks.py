@@ -9,6 +9,23 @@ os.environ['env_name']="development"
 from twitivity import Activity
 
 account_activity = Activity()
-account_activity.register_webhook("https://fd27-143-198-221-207.ap.ngrok.io/webhooks/twitter")
-account_activity.subscribe()
+
+# existing = account_activity.webhooks()
+
+# # Delete existing webhooks
+# import json
+# print(json.dumps(existing, indent=2))
+# try:
+    # existing = existing['environments'][0]['webhooks'][0]['id']
+# except:
+    # existing = False
+# if existing:
+    # account_activity.delete(existing)
+
+# create new webhook
+account_activity.register_webhook("https://313f-143-198-221-207.ap.ngrok.io/webhooks/twitter")
+# account_activity.register_webhook("https://143.198.221.207:3000")
+resp = account_activity.subscribe()
+
+print(resp.json())
 
