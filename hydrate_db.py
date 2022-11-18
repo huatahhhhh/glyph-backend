@@ -45,7 +45,7 @@ def get_events(from_block, to_block, contract_class: _Contract, dump=False):
     #pp.pprint(all_logs)
     if dump:
         data = json.dumps(all_logs, indent=2)
-        with open(f'{contract_class.__name__}.event_dump', 'w') as f:
+        with open(f'{contract_class.__name__}.event_dump.{to_block}', 'w') as f:
             f.write(data)
     return all_logs
 
@@ -78,7 +78,7 @@ def handle_data(data):
         # elif event_type == 'PredictionExpired':
             # expire_prediction(args)
 
-        elif event_type == 'UseScoreUpdated':
+        elif event_type == 'UserScoreUpdated':
             update_user_score(args)
 
 def activate_symbol(args):
@@ -176,16 +176,24 @@ def complete_prediction(args):
         print('failed to reply to')
         print(e)
 
-
-        
-
-    
-    
-
-
-
 def update_user_score(args):
-    pass
+    # check if entry exists
+    user, num_pending, num_completed, num_correct, avg_return = args['user'], args['num_pending'], args['num_completed'], args['num_correct'], args['avg_return']
+    exists = c.execute(f"SELECT * FROM Score WHERE address='{user}'").fetchall()
+    exists = len(exists)>0
+    if exists:
+        sql = f"""
+        UPDATE score SET num_pending={num_pending}, num_completed={num_completed},
+        num_correct={num_correct}, avg_return={avg_return} WHERE address='{user}'
+        """
+        print(sql)
+    else:
+        sql = f"""
+        INSERT INTO score VALUES ('{user}',{num_pending},{num_completed},{num_correct},{avg_return})
+        """
+        print(sql)
+    c.execute(sql)
+
 
 def get_last_block_db():
     exists = c.execute("SELECT * FROM ChainUpdate").fetchall()
