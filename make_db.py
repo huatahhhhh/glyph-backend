@@ -40,6 +40,7 @@ def create_predictions_db(c):
         final_price,
         final_price_on,
         status,
+        ipfsCID,
         UNIQUE(address, predicted_on, symbol)
     )
     """)

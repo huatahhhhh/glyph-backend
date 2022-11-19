@@ -148,7 +148,7 @@ def _handle_predict_flow(tweet_id, user_id, user_name, args, tweet_text):
     # prediction time
     pred_at = int(time.time())
 
-    print(address, pred_at, symbol, direction, duration, "na")
+    print(address, pred_at, symbol, direction, duration)
     ipfs_data = dict(tweet_id=tweet_id, twitter_user_id=user_id, twitter_username=f"@{user_name}", tweet=tweet_text)
     ipfscid = write_to_ipfs(ipfs_data)
     tx = PredictContract.create_prediction(
@@ -274,7 +274,42 @@ def wallet_lookup():
     wallet = request.args.get("address")
     return {'result': PredictContract.is_user(wallet)}
 
- 
+@app.route("/glyph/score/")
+def get_user_score_api():
+    wallet = request.args.get("address")
+    d = _get_user_score(wallet)
+    return d
+
+@app.route("/glyph/user_predictions/")
+def get_user_predictions_api():
+    wallet = request.args.get("address")
+    score = _get_user_prediction(wallet)
+    return score
+    
+def _get_user_score(address):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    r = cursor.execute(f"SELECT * FROM score WHERE address='{address}'").fetchall()
+    if len(r) < 1:
+        return {}
+    # address, num_pending, num_completed, num_correct, avg_return = r[0], r[1], r[2], r[3], r[4]
+    # d = dict(address=address, num_pending=num_pending, num_completed=num_completed, avg_return=avg_return)
+    conn.close()
+    # return d
+    return dict(r[0])
+
+def _get_user_prediction(address):
+    conn = sqlite3.connect(DB_NAME)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    r = cursor.execute(f"SELECT * FROM prediction WHERE address='{address}'").fetchall()
+    if len(r) < 1:
+        return {}
+
+    conn.close()
+    return dict(data=[dict(row) for row in r])
  
 # Once we have our event listeners configured, we can start the
 # Flask server with the default `/events` endpoint on port 3000

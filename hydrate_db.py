@@ -120,7 +120,8 @@ def create_prediction(args):
         {args['initialPriceTimestamp']},
         null,
         null,
-        'created'
+        'created',
+        '{args['ipfsCID']}'
         )
     """)
     # conn.commit()
