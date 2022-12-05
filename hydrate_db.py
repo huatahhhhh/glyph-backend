@@ -172,6 +172,7 @@ def complete_prediction(args):
 
     try:
         reply_to_tweet(tweet_id, None, message)
+        time.sleep(2)
         print('replied to',tweet_id)
     except Exception as e:
         print('failed to reply to')
